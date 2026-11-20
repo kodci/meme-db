@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "memes": [
+    {
+      "id": "ornek3",
+      "title": "Üretimde test etmek",
+      "type": "text",
+      "text": "Localde çalışıyor.\n\nO zaman locali deploy edelim.",
+      "tags": [
+        "yazılım",
+        "klasik"
+      ],
+      "author": "memefeed",
+      "createdAt": "2026-11-18T10:00:00Z"
+    },
+    {
+      "id": "ornek2",
+      "title": "Pazartesi sabahı",
+      "type": "text",
+      "text": "Hafta sonu: 2 gün.\nHafta sonu bitmek üzere: 2 saniye.",
+      "tags": [
+        "gündelik"
+      ],
+      "author": "memefeed",
+      "createdAt": "2026-06-02T08:30:00Z"
+    },
+    {
+      "id": "ornek1",
+      "title": "İlk meme",
+      "type": "text",
+      "text": "Bu depoya ilk meme eklendi.\nArşiv buradan başlıyor.",
+      "tags": [
+        "arşiv"
+      ],
+      "author": "memefeed",
+      "createdAt": "2024-03-15T12:00:00Z"
+    }
+  ]
+}
