@@ -9,6 +9,7 @@ Kullanım:
     python tools/sync_youtube.py          # playlists.txt dosyasındaki listeleri eşitler
     python tools/sync_youtube.py "https://www.youtube.com/playlist?list=PLxxxx" --tag komik
     python tools/sync_youtube.py --no-prune
+    python tools/sync_youtube.py --recheck   # var olan videoların dikey (Shorts) bilgisini yenile
 
 playlists.txt (satır başına bir playlist; # ile yorum; satır sonuna #etiket yazılabilir):
     https://www.youtube.com/playlist?list=PLxxxxxxxx   #komik #kedi
@@ -18,7 +19,10 @@ Davranış:
     elle yaptığın başlık/etiket düzenlemeleri korunur.
   * Playlist'ten kaldırılan videolar index.json'dan da silinir (sadece bu script
     tarafından eklenenler; "playlist" alanı olanlar). --no-prune ile kapatılır.
-  * Özel/silinmiş videolar atlanır. Bir playlist boş dönerse silme yapılmaz.
+  * Özel/silinmiş ve GÖMMEYE KAPALI videolar atlanır (uygulamada oynamazlar);
+    daha önce eklenmişlerse bir sonraki eşitlemede silinir.
+  * Shorts (dikey) videolar "vertical": true ile işaretlenir; Reels'te ekranı doldurur.
+  * Bir playlist boş dönerse silme yapılmaz.
 Tarih: videonun YouTube'a yüklenme tarihi (createdAt). --date added dersen
 playlist'e eklenme tarihi kullanılır.
 """
@@ -30,9 +34,11 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 API = "https://www.googleapis.com/youtube/v3/playlistItems"
+VIDEOS_API = "https://www.googleapis.com/youtube/v3/videos"
 SKIP_TITLES = {"private video", "deleted video"}
 
 
@@ -99,7 +105,48 @@ def fetch_playlist(playlist_id: str, api_key: str, get=http_get_json):
             return items
 
 
-def to_entry(item: dict, playlist_id: str, tags, date_mode: str):
+def fetch_embeddable(ids, api_key, get=http_get_json):
+    """{videoId: gömülebilir mi}. API'de dönmeyen video özel/silinmiştir (False)."""
+    ids = list(dict.fromkeys(ids))
+    out = {i: False for i in ids}
+    for k in range(0, len(ids), 50):
+        chunk = ids[k:k + 50]
+        q = {"part": "status", "id": ",".join(chunk), "key": api_key}
+        data = get(VIDEOS_API + "?" + urllib.parse.urlencode(q))
+        for it in data.get("items", []):
+            out[it["id"]] = bool(it.get("status", {}).get("embeddable", False))
+    return out
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def is_short(video_id: str) -> bool:
+    """youtube.com/shorts/ID Shorts için 200 döner, diğer videolarda yönlendirir.
+    Resmi bir API değildir; başarısız olursa dikey sayılmaz."""
+    req = urllib.request.Request(
+        f"https://www.youtube.com/shorts/{video_id}",
+        method="HEAD",
+        headers={"User-Agent": "Mozilla/5.0"},
+    )
+    try:
+        with urllib.request.build_opener(_NoRedirect).open(req, timeout=15) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def detect_vertical(ids, check=is_short):
+    ids = list(ids)
+    if not ids:
+        return {}
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        return dict(zip(ids, ex.map(check, ids)))
+
+
+def to_entry(item: dict, playlist_id: str, tags, date_mode: str, vertical=None):
     sn = item.get("snippet", {})
     cd = item.get("contentDetails", {})
     vid = cd.get("videoId") or sn.get("resourceId", {}).get("videoId")
@@ -110,7 +157,7 @@ def to_entry(item: dict, playlist_id: str, tags, date_mode: str):
         created = sn.get("publishedAt") or cd.get("videoPublishedAt")
     else:
         created = cd.get("videoPublishedAt") or sn.get("publishedAt")
-    return {
+    entry = {
         "id": f"yt-{vid}",
         "title": title,
         "type": "youtube",
@@ -120,9 +167,12 @@ def to_entry(item: dict, playlist_id: str, tags, date_mode: str):
         "createdAt": created or "1970-01-01T00:00:00Z",
         "playlist": playlist_id,
     }
+    if vertical and vertical.get(vid):
+        entry["vertical"] = True
+    return entry
 
 
-def sync(doc: dict, fetched: dict, tags_by_playlist: dict, prune=True, date_mode="published"):
+def sync(doc: dict, fetched: dict, tags_by_playlist: dict, prune=True, date_mode="published", vertical=None):
     """doc'u yerinde günceller. fetched: {playlistId: [api item, ...]}"""
     items = doc.setdefault("memes", [])
     existing = {m.get("videoId") for m in items if m.get("videoId")}
@@ -131,7 +181,7 @@ def sync(doc: dict, fetched: dict, tags_by_playlist: dict, prune=True, date_mode
     for pid, api_items in fetched.items():
         live = set()
         for it in api_items:
-            e = to_entry(it, pid, tags_by_playlist.get(pid, []), date_mode)
+            e = to_entry(it, pid, tags_by_playlist.get(pid, []), date_mode, vertical)
             if e is None:
                 continue
             live.add(e["videoId"])
@@ -158,6 +208,7 @@ def main() -> None:
     ap.add_argument("--tag", action="append", default=[], help="komut satırından verilen listeler için etiket")
     ap.add_argument("--no-prune", action="store_true", help="playlist'ten kalkan videoları silme")
     ap.add_argument("--date", choices=["published", "added"], default="published")
+    ap.add_argument("--recheck", action="store_true", help="mevcut videolar için de dikey (Shorts) kontrolünü yeniden yap")
     args = ap.parse_args()
 
     key = os.environ.get("YOUTUBE_API_KEY", "").strip()
@@ -191,7 +242,30 @@ def main() -> None:
         tags_by[pid] = tags
         print(f"  {len(fetched[pid])} öğe")
 
-    added, removed = sync(doc, fetched, tags_by, prune=not args.no_prune, date_mode=args.date)
+    def vid_of(it):
+        return it.get("contentDetails", {}).get("videoId") or it.get("snippet", {}).get("resourceId", {}).get("videoId")
+
+    all_ids = [vid_of(it) for items in fetched.values() for it in items if vid_of(it)]
+    emb = fetch_embeddable(all_ids, key)
+    skipped = sum(1 for v in set(all_ids) if not emb.get(v))
+    for pid in fetched:
+        fetched[pid] = [it for it in fetched[pid] if emb.get(vid_of(it))]
+    print(f"{skipped} video atlandı (özel/silinmiş/gömmeye kapalı)")
+
+    known = {m.get("videoId") for m in doc.get("memes", []) if m.get("videoId")}
+    new_ids = [v for v in dict.fromkeys(all_ids) if emb.get(v) and (args.recheck or v not in known)]
+    vertical = detect_vertical(new_ids)
+    print(f"{sum(vertical.values())} dikey (Shorts) video bulundu")
+
+    added, removed = sync(doc, fetched, tags_by, prune=not args.no_prune, date_mode=args.date, vertical=vertical)
+    if args.recheck:
+        for m in doc["memes"]:
+            v = m.get("videoId")
+            if v in vertical:
+                if vertical[v]:
+                    m["vertical"] = True
+                else:
+                    m.pop("vertical", None)
     index_path.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"{added} eklendi, {removed} silindi, toplam {len(doc['memes'])} meme -> {index_path}")
 
