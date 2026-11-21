@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Memefeed</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; font-family: system-ui, sans-serif; background: #111; color: #eee; }
+  main { max-width: 560px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 18px; margin: 8px 0 12px; }
+  .media { width: 100%; border-radius: 12px; display: block; background: #000; }
+  .text { border-radius: 12px; padding: 32px 20px; min-height: 160px; display: flex;
+          align-items: center; justify-content: center; text-align: center; font-size: 22px;
+          font-weight: 700; white-space: pre-wrap;
+          background: linear-gradient(135deg, #ff512f, #dd2476); color: #fff; }
+  .meta { color: #999; font-size: 13px; margin: 8px 0 16px; }
+  .btn { display: block; text-align: center; padding: 14px; border-radius: 12px; background: #ff5a1f;
+         color: #fff; text-decoration: none; font-weight: 700; margin-top: 16px; }
+  .note { color: #999; font-size: 13px; margin-top: 12px; text-align: center; }
+</style>
+</head>
+<body>
+<main id="app"><p>Yükleniyor…</p></main>
+<script>
+  // flutter create --org com.memefeed --project-name memefeed => bu paket adı
+  var PACKAGE = 'com.memefeed.memefeed';
+  var params = new URLSearchParams(location.search);
+  var id = params.get('id');
+  var app = document.getElementById('app');
+  var isAndroid = /android/i.test(navigator.userAgent);
+
+  function intentUrl() {
+    var fallback = location.origin + location.pathname + '?id=' + encodeURIComponent(id) + '&noapp=1';
+    return 'intent://meme/' + encodeURIComponent(id) + '#Intent;scheme=memefeed;package=' + PACKAGE +
+      ';S.browser_fallback_url=' + encodeURIComponent(fallback) + ';end';
+  }
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text) e.textContent = text;
+    return e;
+  }
+
+  function show(m) {
+    app.textContent = '';
+    if (m.title) app.appendChild(el('h1', '', m.title));
+    if (m.type === 'text') {
+      app.appendChild(el('div', 'text', m.text || ''));
+    } else if (m.type === 'youtube') {
+      var f = el('iframe', 'media');
+      f.src = 'https://www.youtube-nocookie.com/embed/' + encodeURIComponent(m.videoId);
+      f.style.aspectRatio = '16 / 9';
+      f.style.border = '0';
+      f.allow = 'autoplay; encrypted-media; picture-in-picture; fullscreen';
+      f.allowFullscreen = true;
+      app.appendChild(f);
+    } else {
+      var url = new URL('../' + encodeURI(m.file), location.href).href;
+      var node;
+      if (m.type === 'video') {
+        node = el('video', 'media');
+        node.src = url; node.controls = true; node.playsInline = true; node.loop = true;
+      } else {
+        node = el('img', 'media');
+        node.src = url; node.alt = m.title || 'meme';
+      }
+      app.appendChild(node);
+    }
+    app.appendChild(el('div', 'meta', (m.author || 'anonim') + (m.tags && m.tags.length ? ' · #' + m.tags.join(' #') : '')));
+    if (isAndroid) {
+      var a = el('a', 'btn', 'Uygulamada aç');
+      a.href = intentUrl();
+      app.appendChild(a);
+      app.appendChild(el('div', 'note', 'Uygulama yüklü değilse meme burada görünmeye devam eder.'));
+    } else {
+      app.appendChild(el('div', 'note', 'Memefeed uygulamasını Android\'de açarak daha fazla meme gör.'));
+    }
+  }
+
+  function fail(msg) { app.textContent = ''; app.appendChild(el('p', '', msg)); }
+
+  if (!id) {
+    fail('Meme bulunamadı.');
+  } else {
+    // Android'de önce uygulamayı açmayı dene (bir kez); olmazsa meme sayfada kalır.
+    var tried = false;
+    try { tried = sessionStorage.getItem('opened:' + id) === '1'; } catch (e) {}
+    if (isAndroid && !params.get('noapp') && !tried) {
+      try { sessionStorage.setItem('opened:' + id, '1'); } catch (e) {}
+      location.href = intentUrl();
+    }
+    fetch('../index.json?t=' + Date.now())
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function (doc) {
+        var list = Array.isArray(doc) ? doc : (doc.memes || []);
+        var m = list.find(function (x) { return String(x.id || x.file) === id; });
+        if (!m) return fail('Bu meme depoda bulunamadı.');
+        if (!m.type && m.videoId) m.type = 'youtube';
+        if (!m.type) m.type = m.file ? (/\.(mp4|webm|mov|m4v)$/i.test(m.file) ? 'video' : 'image') : 'text';
+        show(m);
+      })
+      .catch(function () { fail('Meme yüklenemedi.'); });
+  }
+</script>
+</body>
+</html>
